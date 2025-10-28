@@ -1,0 +1,563 @@
+---
+title: "Project 1 ISA 591"
+author: "Duke Buckalew"
+date: "2025-09-23"
+output:
+  html_document:
+    code_folding: show
+    df_print: paged
+    number_sections: yes
+    theme: readable
+    toc: yes
+    toc_float: yes
+    code_download: yes
+  word_document:
+    toc: no
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+```{r}
+knitr::opts_chunk$set(echo = TRUE, message=FALSE,warning=FALSE)
+knitr::opts_chunk$set(fig.width=8, fig.height=6)
+
+if(require(pacman)==0)
+   {install.packages("pacman")}
+pacman::p_load(devtools,caret,cluster,dplyr,fastDummies,leaps,pacman,tidyverse,skimr,fastDummies,GGally,DataExplorer,ggrepel,ggthemes,dslabs,scatterplot3d)
+
+if (!require(mlba)) {
+  library(devtools)
+  install_github("gedeck/mlba/mlba", force=FALSE)
+}
+pacman::p_load(mlba,tidyverse)
+```
+
+
+```{r}
+data = readr::read_csv("/Users/dukeb/Desktop/Grad School/Data/train.csv")
+```
+
+# Introductory Exploratory Data Analysis
+```{r}
+DataExplorer::plot_missing(data)
+```
+mths_since_last_delinq, mort_acc, and emp_title all have large amounts of missing data. These will need to be dealt with
+
+```{r}
+DataExplorer::plot_correlation(data,
+                               type="continuous",
+                               cor_args = list("use" = "pairwise.complete.obs"))
+```
+installment is directly related to loan_amount. This makes sense because your payments are based on how much you owe. That being said, one will most likely need to be removed to not have multicolinearity. I will be getting rid of installment. FICO range high and low will need to be dealt with as well, as they are directly correlated.
+
+## Turning date columns into a Date type
+```{r}
+data$issue_d = my(data$issue_d)
+data$earliest_cr_line = my(data$earliest_cr_line)
+data$last_credit_pull_d = my(data$last_credit_pull_d)
+data = data %>%
+  drop_na(last_credit_pull_d)
+```
+As.Date does not work for these variables. After talking to Dr. Farmer, we decided the my() function was the most appropriate, and it worked.
+
+
+```{r}
+DataExplorer::plot_histogram(data,
+                             nrow = 3,
+                             ncol = 4)
+```
+Taking a look at my numerical variables, I see a lot of skewness. This will need to be dealt with before any analysis takes place. 
+
+
+```{r}
+skewed = data %>%
+select(annual_inc, dti, mort_acc, open_acc, pub_rec, pub_rec_bankruptcies, revol_bal, revol_util, total_acc, acc_now_delinq, delinq_2yrs)
+summary(skewed)
+plot_histogram(skewed)
+```
+I graphed my numerical variables, and put the ones I saw an obvious, visible skew into another dataset to keep track of which ones I needed to work on. I will deal with these in the next part.
+
+# Dealing with Skewed Data
+
+## DTI
+```{r}
+data$dti[data$dti==9999] <- NA
+data$dti[data$dti == 380.53] <- NA
+summary(data$dti)
+```
+207 people have dti of 0. The 9999 dti is almost certaintly an error. It will be handled as NA. A dti of 400, while technically possible, is extremely rare and does not hold any value.
+
+
+## Annual Income
+```{r}
+data <- data %>%
+  mutate(across(annual_inc, log1p))
+summary(data$annual_inc)
+plot_histogram(data$annual_inc)
+```
+Log imputation is appropriate in this situation, but there is a 0 value. log1p is necessary.
+
+
+## Mort Acc
+```{r}
+data$mort_acc[is.na(data$mort_acc)] <- 0
+data <- data %>%
+  mutate(MortAccBin = case_when(
+    mort_acc == 0 ~ "0",
+    mort_acc == 1 ~ "1",
+    mort_acc <= 3 ~ "2-3",
+    mort_acc <= 6 ~ "4-6",
+    mort_acc <= 9 ~ "7-9",
+    mort_acc >= 10 ~ "10+",
+    TRUE ~ NA_character_
+  ))
+data$MortAccBin <- factor(data$MortAccBin, 
+                       levels = c("0", "1", "2-3", "4-6", "7-9", "10+"))
+table(data$MortAccBin)
+data = data %>%
+  select(-mort_acc)
+```
+This variable has a lot of NA's. I believe this means they have no Mortgage Accounts, so I will set NAs to 0. Because this data is for personal loans and not business loans, having 32 mortgage accounts does not sound feasible to me, so I will create bins for 0-10 mortgages and 10+ mortgages. Afterwards I will remove the original mort_acc.
+
+## Acc Now Delinq
+```{r}
+data <- data %>%
+  mutate(AccNowDelinqBin = case_when(
+    acc_now_delinq == 0 ~ "0",
+    acc_now_delinq == 1 ~ "1",
+    acc_now_delinq >= 2 ~ "2+",
+    TRUE ~ NA_character_
+  ))
+data$AccNowDelinqBin <- factor(data$AccNowDelinqBin,
+                               levels = c("0", "1", "2+"))
+table(data$AccNowDelinqBin)
+data = data %>%
+  select(-acc_now_delinq)
+```
+Because these has so many at 0 and very few non-0, I am going to create 3 bins, 1 for 0, 1 for 1 and 1 for 2 or more. I am less worried about the granularity here because I feel as though if an applicant is delinquent on more than 1 loan at a time their chances of defaulting are equally high.
+
+
+## Delinq_2yrs
+```{r}
+summary(data$delinq_2yrs)
+plot_histogram(data$delinq_2yrs)
+table(data$delinq_2yrs)
+data <- data %>%
+  mutate(Delinq2YearBin = case_when(
+    delinq_2yrs == 0 ~ "0",
+    delinq_2yrs == 1 ~ "1",
+    delinq_2yrs == 2 ~ "2",
+    delinq_2yrs == 3 ~ "3",
+    delinq_2yrs == 4 ~ "4",
+    delinq_2yrs == 5 ~ "5",
+    delinq_2yrs == 6 ~ "6",
+    delinq_2yrs == 7 ~ "7",
+    delinq_2yrs == 8 ~ "8",
+    delinq_2yrs == 9 ~ "9",
+    delinq_2yrs >= 10 ~ "10+",
+    TRUE ~ NA_character_
+  ))
+data$Delinq2YearBin <- factor(data$Delinq2YearBin,
+                               levels = c("0", "1", "2", "3", "4", "5", "6", "7", "8", "9", "10+"))
+data = data %>%
+  select(-delinq_2yrs)
+```
+The vast majority of individuals have not been delinquent on their loans for 30+ days in the last 2 years. However, I feel like this data might be predictive for predicting defaults, as if they're delinquent they on the road to defaulting. Because of this, I am going to bin them, having 10 bins and stopping at 10+.
+
+
+## Open Acc
+```{r}
+quantile(data$open_acc, probs = c(0.90, 0.95, 0.99))
+data <- data %>%
+  mutate(open_acc = pmin(open_acc, 32))
+plot_histogram(data$open_acc)
+summary(data$open_acc)
+table(data$open_acc)
+```
+Using quantile(), we can see that 99% of people have less than 27 lines open. Because of this, I am going to set anything larger than 32 (added 5 for a buffer) lines to 32, to make sure it keeps its predictive value but not have adverse effects on our model. 
+
+
+## Pub_Rec
+```{r}
+data <- data %>%
+  mutate(PubRecBin = case_when(
+    pub_rec == 0 ~ "0",
+    pub_rec == 1 ~ "1",
+    pub_rec >= 2 ~ "2+",
+    TRUE ~ NA_character_
+  ))
+
+data$PubRecBin <- factor(data$PubRecBin,
+                               levels = c("0", "1", "2+"))
+
+data = data %>%
+  select(-pub_rec)
+```
+Having a derogatory statement against you in my opinion would have predictive power in loan_defaults, so I'm going to make 3 bins, 1 at 0, 1 at 1, and 1 at 2+
+
+
+## Pub_Rec_Bankruptcies
+```{r}
+summary(data$pub_rec_bankruptcies)
+table(data$pub_rec_bankruptcies)
+plot_histogram(data$pub_rec_bankruptcies)
+data <- data %>%
+  mutate(PubRecBankBin = case_when(
+    pub_rec_bankruptcies == 0 ~ "0",
+    pub_rec_bankruptcies == 1 ~ "1",
+    pub_rec_bankruptcies >= 2 ~ "2+",
+    TRUE ~ "Unknown"
+  ))
+
+data$PubRecBankBin <- factor(data$PubRecBankBin,
+                               levels = c("0", "1", "2+", "Unknown"))
+
+data = data %>%
+  select(-pub_rec_bankruptcies)
+```
+Very similar to Pub_Rec, I feel Pub_Rec_Bankruptcies would have a very strong predictive power in loan defaults. Because of this I am going to handle these the exact same way.
+
+
+## Revol_Bal
+```{r}
+data <- data %>%
+  mutate(across(revol_bal, log1p))
+summary(data$revol_bal)
+plot_histogram(data$revol_bal)
+```
+I am going to take the log of this variable. This data is largely right skewed and would be a better predictor if the outliers didn't have such a large effect on our data. 
+
+## Revol_Util
+```{r}
+data$revol_util[is.na(data$revol_util)] <- 0
+data <- data %>%
+  mutate(revol_util = pmin(revol_util, 150))
+plot_histogram(data$revol_util)
+summary(data$revol_util)
+table(data$revol_util)
+```
+There are NAs most likely because these people have a total credit of 0. Because of this I will set them to 0. The outliers are most likely there because they have used more than their total credit amount. Because of this, I believe they have predictive value in predicting loan_default so I will cap them instead of getting rid of them. I will set the cap at 150, meaning that they are using 150% of their total credit available.
+
+## Total_Acc
+```{r}
+
+quantile(data$total_acc, probs = c(0.90, 0.95, 0.99))
+data <- data %>%
+  mutate(open_acc = pmin(open_acc, 65))
+plot_histogram(data$open_acc)
+summary(data$open_acc)
+table(data$open_acc)
+```
+Similar to open_acc, using quantile(), we can see that more than 99% of people have less than 60 total credit lines open in their credit history. Because of this, we can safely cap at 65 (5 for buffer) without feeling like we are substantially altering the data. 
+
+
+```{r}
+DataExplorer::plot_histogram(data,
+                             nrow = 3,
+                             ncol = 4)
+```
+I see a lot less skewness in the data.
+
+## loan_default
+```{r}
+table(data$loan_default)
+data$loan_default = factor(data$loan_default,
+                           levels = c("No", "Yes"))
+```
+loan_default, our response variable, would be much easier to deal with if it were a factor.
+
+
+## loan_amt
+```{r}
+table(data$loan_amnt)
+summary(data$loan_amnt)
+plot_histogram(data$loan_amnt)
+```
+This data seems clean. No extreme outliers, NAs, or anything of immediate concern. I feel touching it would only make our data not reflect reality.
+
+
+## term
+```{r}
+table(data$term)
+data$term = factor(data$term,
+                  levels = c("36 months", "60 months"))
+```
+This variable should be a factor, not a character. Changing it to a factor will make it easier to handle.
+
+
+## int_rate
+```{r}
+table(data$int_rate)
+summary(data$int_rate)
+plot_histogram(data$int_rate)
+```
+This also seems clean to me. The range is within the realm of possibility for a personal loan, and there are no NAs, 0s, or immediate concerns. I will leave this as is.
+
+
+
+## installment
+```{r}
+data = data %>%
+  select(-installment)
+```
+This data is directly related to loan_amt. Because of this I am going to get rid of this variable to make sure there is no multicolinearity.
+
+
+## grade
+```{r}
+data$grade = factor(data$grade,
+                    levels = c("A", "B", "C", "D", "E", "F", "G"))
+table(data$grade)
+```
+Grade is currently a character. I am going to make it a factor so it's easier to handle.
+
+
+## sub_grade
+```{r}
+data$sub_grade = factor(data$sub_grade,
+                    levels = c("A1", "A2", "A3", "A4", "A5", "B1", "B2", "B3", "B4", "B5", "C1", "C2", "C3", "C4", "C5", "D1", "D2", "D3", "D4", "D5", "E1", "E2", "E3", "E4", "E5", "F1", "F2", "F3", "F4", "F5", "G1", "G2", "G3", "G4", "G5"))
+table(data$sub_grade)
+```
+Similar to grade, I am going to turn this character variable into a factor.
+
+
+
+## emp_title
+This variable needs a lot of cleaning. Despite having the same job, people input it differently. For example, "Registered Nurse" could be "RN", "Rn", "rn" or "Nurse" and others. This is not the only one that does this.
+```{r}
+library(dplyr)
+library(stringr)
+
+abbr = c(
+  "\\bsr\\b"="senior","\\bjr\\b"="junior","\\bmgr\\b"="manager","\\bdir\\b"="director",
+  "\\bvp\\b"="vice president","\\bits?\\b"="it","\\bdev\\b"="developer","\\beng\\b"="engineer",
+  "\\brn\\b"="registered nurse","\\bqa\\b"="quality assurance",
+  "\\bcfo\\b"="chief financial officer","\\bceo\\b"="chief executive officer","\\bcoo\\b"="chief operating officer")
+filler = "\\b(the|a|an|of|for|with|and|at|in|to|dept|department|company|llc|inc|co|corp|plc|gmbh|ltd|hospital|university|school)\\b"
+
+fingerprint = function(clean) clean %>%
+  str_to_lower() %>%
+  str_replace_all("[[:punct:]]"," ") %>%
+  str_squish() %>%
+  str_replace_all(abbr) %>%
+  str_replace_all(filler," ") %>%
+  str_squish() %>%
+  (function(sort) sapply(str_split(sort,"\\s+"), function(word) paste(sort(word), collapse=" ")))()
+
+data = data %>%
+  mutate(
+    emp_title = na_if(trimws(emp_title), "Other"),           
+    emp_title_norm = fingerprint(emp_title),           
+    emp_title_norm = na_if(emp_title_norm, "Other")         
+  )
+
+data = data %>%
+  mutate(
+    emp_role = case_when(
+      str_detect(emp_title_norm, "\\bmanager\\b")                       ~ "manager",
+      str_detect(emp_title_norm, "\\bdirector\\b")                      ~ "director",
+      str_detect(emp_title_norm, "\\bvice president\\b|\\bvp\\b")       ~ "vice president",
+      str_detect(emp_title_norm, "\\bchief executive officer\\b")       ~ "ceo",
+      str_detect(emp_title_norm, "\\bchief financial officer\\b")       ~ "cfo",
+      str_detect(emp_title_norm, "\\bchief operating officer\\b")       ~ "coo",
+      str_detect(emp_title_norm, "\\bregistered nurse\\b|\\bnurse\\b")  ~ "nurse",
+      str_detect(emp_title_norm, "\\bengineer\\b|\\bdeveloper\\b|\\bdev\\b") ~ "engineer",
+      str_detect(emp_title_norm, "\\banalyst\\b")                       ~ "analyst",
+      str_detect(emp_title_norm, "\\baccountant\\b|\\baccounting\\b")   ~ "accountant",
+      str_detect(emp_title_norm, "\\bsales\\b|\\bsalesperson\\b")       ~ "sales",
+      str_detect(emp_title_norm, "\\btechnician\\b|\\btech\\b")         ~ "technician",
+      str_detect(emp_title_norm, "\\bteacher\\b|\\beducator\\b")        ~ "teacher",
+      str_detect(emp_title_norm, "\\bassistant\\b|\\badmin\\b")         ~ "assistant/admin",
+      str_detect(emp_title_norm, "\\bdriver\\b")                        ~ "driver",
+      str_detect(emp_title_norm, "\\bowner\\b|\\bfounder\\b")           ~ "owner/founder",
+      str_detect(emp_title_norm, "\\bcustomer service\\b|\\bcsr\\b")    ~ "customer service",
+      is.na(emp_title_norm)                                             ~ "Unknown",
+      TRUE                                                              ~ emp_title_norm))
+
+top_titles = count(data, emp_title_norm, sort = TRUE) %>% slice_head(n = 500) %>% pull(emp_title_norm)
+
+data = data %>%
+  mutate(
+    emp_title_clean = if_else(emp_title_norm %in% top_titles, emp_title_norm, "Other")
+  )
+freq = count(data, emp_title_clean, sort = TRUE)
+
+data = data %>%
+  select(-emp_title, -emp_role, -emp_title_norm)
+```
+\\b is a word border. It is used to make sure rn becomes registered nurse, but thorn doesn't become thoregistered nurse. My function, clean, sorts tokens so word order doesn’t create false uniques. This is done by separating their words, sorting them alphabetically, and then rejoining them. Doing it this way still leaves 147,178 observations in the "Other" category. In the future I would hope to find a better way to separate them. 
+
+
+## emp_length
+```{r}
+data <- data %>%
+  mutate(emp_length = case_when(
+    emp_length == 0 ~ "< 1 year",
+    emp_length == 1 ~ "1 year",
+    emp_length == 2 ~ "2 years",
+    emp_length == 3 ~ "3 years",
+    emp_length == 4 ~ "4 years",
+    emp_length == 5 ~ "5 years",
+    emp_length == 6 ~ "6 years",
+    emp_length == 7 ~ "7 years",
+    emp_length == 8 ~ "8 years",
+    emp_length == 9 ~ "9 years",
+    emp_length >= 10 ~"10+ years",
+    TRUE ~ "NA"
+  ))
+
+data$emp_length <- factor(data$emp_length,
+                               levels = c("< 1 year", "1 year", "2 years", "3 years", "4 years", "5 years", "6 years", "7 years", "8 years", "9 years", "10+ years", "NA"))
+```
+This should be a factor instead of a character to make it easier to deal with.
+
+
+
+## home_ownership
+```{r}
+data$home_ownership = factor(data$home_ownership,
+                             levels = c("MORTGAGE", "NONE", "OTHER", "OWN", "RENT"))
+table(data$home_ownership)
+```
+This character should also be a factor.
+
+
+
+## verification_status
+```{r}
+data$verification_status = factor(data$verification_status,
+                                  levels = c("Not Verified", "Source Verified", "Verified"))
+table(data$verification_status)
+```
+This should also be a factor.
+
+
+
+## purpose
+```{r}
+data$purpose = factor(data$purpose,
+                      levels = c("car", "credit_card", "debt_consolidation", "educational",                               "home_improvement", "house", "major_purchase", "medical", "moving", "other",                        "renewable_energy", "small_business", "vacation", "wedding"))
+table(data$purpose)
+```
+I was nervous that this would be similar to emp_title, but I am relieved to see it can be turned into a factor. 
+
+
+## title
+```{r}
+data = data %>%
+  select(-title)
+```
+Although this data is inherently unclean, I feel as though it has absolutely no predicting power and as such can be removed without affecting the quality of our prediction model in the future.
+
+
+
+## initial_list_status
+```{r}
+data$initial_list_status = factor(data$initial_list_status,
+                                  levels = c("f", "w"))
+table(data$initial_list_status)
+```
+This can be turned into a factor to possibly be used as a predictor
+
+
+
+## application_type
+```{r}
+data$application_type = factor(data$application_type,
+                               levels = c("DIRECT_PAY", "INDIVIDUAL", "JOINT"))
+table(data$application_type)
+```
+This can also be turned into a factor
+
+
+## address
+Address currently has their address, city, state, and zip code all together. I am going to split these into 4 different variables. The problem with this is they are seperated using different things, so it becomes more complicated. 
+```{r}
+library(dplyr)
+library(tidyr)
+library(stringr)
+
+data = data %>%
+  separate(address, into = c("street", "rest"), sep = "\\r\\n", remove = FALSE) %>%
+  separate(rest, into = c("city", "state_zip"), sep = ",", remove = TRUE) %>%
+  mutate(state_zip = str_squish(state_zip)) %>%
+  separate(state_zip, into = c("state", "zip"), sep = " ", extra = "merge")
+data = data %>%
+  select(-c(address, zip, state, street, city))
+```
+First I will split the data into 2 parts - street and rest. Then I will split "rest" into city and state_zip. Finally I split state_zip into state and zip - I need to squish it first though so that there is only 1 space, not 2. I don't know if address, will have much predictive value, but the other variables might. I wanted to see what this would look like seperated. Since I don't think they will hold much meaningful value and there is missing data, I am going to get rid of them.
+
+## fico_range_low & fico_range_high
+```{r}
+data = data %>%
+  mutate(fico_score = (data$fico_range_high + data$fico_range_low) / 2)
+data = data %>%
+  select(-fico_range_low, -fico_range_high)
+```
+The high end is just the lower end + 4. Because of this, seperately they both have the same predicting power. I am going to condense these variables by taking the mean for simplicity.
+
+## inq_last_6mths
+```{r}
+summary(data$inq_last_6mths)
+plot_histogram(data$inq_last_6mths)
+```
+The range of variables is very small here. Despite being skewed, I feel like altering this data will decrease its predictive value. Because of this I am going to keep it the same.
+
+## mths_since_last_delinq
+```{r}
+quantile(data$mths_since_last_delinq, probs = c(0.90, 0.95, 0.99), na.rm = TRUE)
+data <- data %>%
+  mutate(mths_since_last_delinq = pmin(mths_since_last_delinq, 86))
+summary(data$mths_since_last_delinq)
+plot_histogram(data$mths_since_last_delinq)
+
+data <- data %>%
+  mutate(mths_since_last_delinq = case_when(
+    mths_since_last_delinq <= 10 ~ "<=10",
+    mths_since_last_delinq <= 20 ~ "11-20",
+    mths_since_last_delinq <= 30 ~ "21-30",
+    mths_since_last_delinq <= 40 ~ "31-40",
+    mths_since_last_delinq <= 50 ~ "41-50",
+    mths_since_last_delinq <= 60 ~ "51-60",
+    mths_since_last_delinq <= 70 ~ "61-70",
+    mths_since_last_delinq <= 86 ~ "71+",
+    mths_since_last_delinq > 86 ~ "Never",
+    TRUE ~ "Never"
+  ))
+
+data$mths_since_last_delinq <- factor(data$mths_since_last_delinq,
+                               levels = c("<=10", "11-20", "21-30", "31-40", "41-50", "51-60", "61-70", "71+", "Never"))
+
+data = data %>%
+  select(-mths_since_last_delinq)
+```
+There are a lot of NAs in this data. These NAs make sense, since they have never been delinquent. Because these NAs hold meaningful, informative value, I am not going to impute them or give them a value. I thought about setting these values to 999, but this would heavily distort the data if I choose to use linear regression. To clean this data, I am going to cap my data at the 99th quantile, which is 81 + 5 for extra space. Instead of keeping the NAs, I will designate anything with 86+ months to never. While this is not 100% accurate, less than 1% of people are truly past this.
+
+## hardship_flag
+```{r}
+data = data %>%
+  select(-hardship_flag)
+```
+Every observation in the dataset is not under a hardship flag, so this holds no predictive value. I am going to remove it from the dataset.
+
+
+## debt_settlement_flag
+```{r}
+data$debt_settlement_flag = factor(data$debt_settlement_flag,
+                               levels = c("N", "Y"))
+table(data$debt_settlement_flag)
+```
+I am going to turn this character into a variable.
+
+```{r}
+DataExplorer::plot_missing(data)
+```
+
+
+# Saving RDS File
+```{r}
+# saveRDS(data, file = "group12sectionb-Buckalew-Jessup_train.rds")
+```
+
