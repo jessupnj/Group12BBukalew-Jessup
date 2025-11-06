@@ -375,3 +375,51 @@ stopCluster(cl)
 registerDoSEQ()
 ```
 
+```{r}
+pred.holdout$xgb.class <- predict(xgb_model, 
+                                 newdata = holdout.df,
+                                 type="raw")
+pred.holdout$xgb.prob <- predict(xgb_model, 
+                                 newdata = holdout.df, 
+                                 type="prob")[,"Yes"]
+```
+
+```{r}
+truth <- holdout_data$loan_default
+
+# Get model names based on .prob columns
+model_names <- names(holdout_data) %>%
+  stringr::str_subset("\\.prob$") %>%
+  stringr::str_remove("\\.prob$")
+
+# Function to compute metrics for each model
+get_metrics <- function(model_name) {
+  prob_col <- paste0(model_name, ".prob")
+  class_col <- paste0(model_name, ".class")
+
+  # Extract predictions
+  prob <- holdout_data[[prob_col]]
+  pred <- factor(holdout_data[[class_col]], levels = c("No", "Yes"))
+
+  # Confusion matrix
+  cm <- caret::confusionMatrix(pred, truth, positive = "Yes")
+
+  # AUC
+  roc_obj <- pROC::roc(truth, prob, quiet = TRUE)
+
+  # Metrics
+  data.frame(
+    Model = model_name,
+    Accuracy = cm$overall["Accuracy"],
+    Sensitivity = cm$byClass["Sensitivity"],
+    Specificity = cm$byClass["Specificity"],
+    F1 = MLmetrics::F1_Score(
+      y_pred = pred,
+      y_true = truth,
+      positive = "Yes"
+    ),
+    AUC = as.numeric(roc_obj$auc)
+  )
+}
+```
+
