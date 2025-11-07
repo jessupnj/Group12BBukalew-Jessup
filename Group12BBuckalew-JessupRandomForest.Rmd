@@ -1,0 +1,37 @@
+---
+title: "BuckalewJessup 591 Part 2RandomForest"
+output: html_document
+date: "2025-11-07"
+output:
+  html_document:
+    code_folding: show
+    df_print: paged
+    number_sections: yes
+    theme: readable
+    toc: yes
+    toc_float: yes
+    code_download: yes
+  word_document:
+    toc: no
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE, message=FALSE,warning=FALSE)
+knitr::opts_chunk$set(fig.width=8, fig.height=6)
+
+if(require(pacman)==0)
+   {install.packages("pacman")}
+pacman::p_load(devtools,caret,cluster,dplyr,fastDummies,leaps,pacman,tidyverse,skimr,fastDummies,GGally,holdout_dataExplorer,ggrepel,ggthemes,dslabs,scatterplot3d, doParallel, rpart, rpart.plot, randomForest, xgboost, ROCR)
+
+if (!require(mlba)) {
+  library(devtools)
+  install_github("gedeck/mlba/mlba", force=FALSE)
+}
+pacman::p_load(mlba,tidyverse)
+```
+
+```{r}
+holdout_data = read_csv("M:/MSBA/ISA 591/Project 1/Data/holdout.csv")
+train_data = read_rds("group12sectionb-Buckalew-Jessup_train2.rds")
+```
+
