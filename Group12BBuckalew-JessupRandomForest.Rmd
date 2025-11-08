@@ -21,7 +21,7 @@ knitr::opts_chunk$set(fig.width=8, fig.height=6)
 
 if(require(pacman)==0)
    {install.packages("pacman")}
-pacman::p_load(devtools,caret,cluster,dplyr,fastDummies,leaps,pacman,tidyverse,skimr,fastDummies,GGally,holdout_dataExplorer,ggrepel,ggthemes,dslabs,scatterplot3d, doParallel, rpart, rpart.plot, randomForest, xgboost, ROCR)
+pacman::p_load(devtools,caret,cluster,dplyr,fastDummies,leaps,pacman,tidyverse,skimr,fastDummies,GGally,holdout_dataExplorer,ggrepel,ggthemes,dslabs,scatterplot3d, doParallel, rpart, rpart.plot, randomForest, xgboost, ROCR, DataExplorer)
 
 if (!require(mlba)) {
   library(devtools)
@@ -30,8 +30,142 @@ if (!require(mlba)) {
 pacman::p_load(mlba,tidyverse)
 ```
 
+#Read Data
+
 ```{r}
 holdout_data = read_csv("M:/MSBA/ISA 591/Project 1/Data/holdout.csv")
 train_data = read_rds("group12sectionb-Buckalew-Jessup_train2.rds")
+```
+
+```{r}
+holdout_data$loan_default = factor(holdout_data$loan_default,
+                           levels = c("No", "Yes"),
+                           labels = c("No", "Yes"))
+```
+
+
+```{r}
+train_data = train_data %>%
+  drop_na(dti)
+```
+```{r}
+plot_missing(train_data)
+```
+
+
+#Creating Random Forest
+
+```{r}
+majority <- train_data %>% filter(loan_default == "No")
+minority <- train_data %>% filter(loan_default == "Yes")
+
+# undersample majority to match minority count
+majority_down <- majority %>%
+  sample_n(nrow(minority))
+
+# combine back
+train_balanced <- bind_rows(minority, majority_down) %>%
+  sample_frac(1)  # shuffle rows
+
+table(train_balanced$loan_default)
+```
+
+
+
+
+
+
+
+
+```{r}
+set.seed(123)
+cores=parallel::detectCores()
+cl <- parallel::makeCluster(8)  
+registerDoParallel(cl)
+cv_control <- trainControl(
+  method = "cv",
+  number = 5,
+  allowParallel = TRUE
+)
+
+rf <- randomForest::randomForest(loan_default ~ ., 
+                   data=train_data, 
+                   ntree=100, 
+                   mtry=4, 
+                   nodesize=50, 
+                   importance=TRUE
+                   )
+stopCluster(cl) 
+registerDoSEQ()
+```
+
+```{r}
+saveRDS(rf, file = "BuckalewJessupRF")
+```
+
+#View a Summary of Random Forest
+```{r}
+rf
+```
+```{r}
+#Make Predictions
+#pred.holdout$rf.class<- predict(rf, 
+                                newdata=holdout_data, 
+                                type="response")
+#pred.holdout$rf.prob <- predict(rf, 
+                                newdata=holdout.df, 
+                                type="prob")[,"Yes"] # probabilities of "Yes" 
+#head(pred.holdout)
+```
+## Create a Confusion Matrix
+
+```{r}
+confusionMatrix(pred.holdout$rf.class,
+                pred.holdout$Personal.Loan,
+                positive="Yes")
+```
+
+## View variable importance
+
+```{r}
+rf$importance # from rf object
+caret::varImp(rf, type=2)
+```
+
+```{r}
+str(train_balanced$loan_default)
+```
+```{r}
+table(train_balanced$loan_default)
+```
+```{r}
+train_balanced$loan_default <- relevel(train_balanced$loan_default, ref = "No")
+levels(train_balanced$loan_default)
+```
+```{r}
+train_balanced$emp_title_clean
+```
+
+ 
+```{r}
+set.seed(123)
+#Set cv control
+cv_control <- trainControl(method = "cv", number = 5)
+
+# Define a grid of `mtry` values to search over
+mtry_grid <- expand.grid(mtry = seq(1,2, by = 1))
+
+# Train the Random Forest model with cross-validation
+rf_cv <- train(loan_default ~ ., 
+                  data = train_balanced,
+                  method = "rf",  # Uses randomForest under the hood
+                  trControl = cv_control,  # Apply 5-fold CV
+                  tuneGrid = mtry_grid,  # Search over `mtry`
+                  ntree = 50,  # Fixed number of trees
+                  importance = TRUE,
+                  nodesize = 5)
+```
+```{r}
+saveRDS(rf_cv, file = "BuckalewJessupRF_cv.RDS")
 ```
 
