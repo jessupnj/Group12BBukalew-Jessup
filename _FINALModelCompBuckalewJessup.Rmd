@@ -1,0 +1,65 @@
+---
+title: "_FinalModelCompBuckalewJessup"
+date: "2025-11-08"
+output: 
+ html_document:
+    code_folding: show
+    df_print: paged
+    number_sections: yes
+    theme: readable
+    toc: yes
+    toc_float: yes
+    code_download: yes
+  word_document:
+    toc: no
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE, message=FALSE,warning=FALSE)
+knitr::opts_chunk$set(fig.width=8, fig.height=6)
+
+if(require(pacman)==0)
+   {install.packages("pacman")}
+pacman::p_load(devtools,caret,cluster,dplyr,fastDummies,leaps,pacman,tidyverse,skimr,fastDummies,GGally,holdout_dataExplorer,ggrepel,ggthemes,dslabs,scatterplot3d, doParallel, rpart, rpart.plot, randomForest, xgboost, ROCR, DataExplorer)
+
+if (!require(mlba)) {
+  library(devtools)
+  install_github("gedeck/mlba/mlba", force=FALSE)
+}
+pacman::p_load(mlba,tidyverse)
+```
+
+#Read Data
+
+```{r}
+pred.holdout = read_rds("FINALpred.holdout.RDS")
+```
+
+#Plot AUC
+```{r,fig.width=8, fig.height=5}
+# Prediction objects
+pred_xgb=prediction(pred.holdout$xgb.prob, pred.holdout$loan_default)
+pred_pruned=prediction(pred.holdout$Finalpruned_tree.prob, pred.holdout$loan_default)
+pred_rf_cv=prediction(pred.holdout$FinalRF_cv.prob, pred.holdout$loan_default)
+# Performance objects
+perf_xgb=performance(pred_xgb, "tpr", "fpr")
+perf_pruned=performance(pred_pruned, "tpr", "fpr")
+perf_rf_cv=performance(pred_rf_cv, "tpr", "fpr")
+
+# Calculate AUC
+auc_xgb=performance(pred_xgb, "auc")@y.values[[1]]
+auc_pruned=performance(pred_pruned, "auc")@y.values[[1]]
+auc_rf_cv=performance(pred_rf_cv, "auc")@y.values[[1]]
+
+# Plot ROC curves
+plot(perf_pruned, col="tomato", lwd=2, main="ROC Curves for Decision Trees")
+plot(perf_rf_cv, col="steelblue", lwd=2, add=TRUE)
+plot(perf_xgb, col="forestgreen", lwd=2, add=TRUE)
+legend("bottomright", 
+       legend=c("Pruned Tree", "CV Random Forest", "xgb"), 
+       col=c("tomato", "steelblue", "forestgreen"), lwd=2)
+# Add AUC values to the plot
+text(0.5, 0.2, paste("AUC Pruned:", round(auc_pruned, 3)), col="tomato")
+text(0.5, 0.1, paste("AUC CV RF:", round(auc_rf_cv, 3)), col="steelblue")
+text(0.5, 0.15, paste("AUC xgb:", round(auc_xgb, 3)), col="forestgreen")
+```
