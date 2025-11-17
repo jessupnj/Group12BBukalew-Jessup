@@ -1,0 +1,120 @@
+---
+title: "Group12BBuckalew-JessupLogisticReg"
+date: "2025-11-07"
+output:
+  html_document:
+    code_folding: show
+    df_print: paged
+    number_sections: yes
+    theme: readable
+    toc: yes
+    toc_float: yes
+    code_download: yes
+  word_document:
+    toc: no
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE, message=FALSE,warning=FALSE)
+knitr::opts_chunk$set(fig.width=8, fig.height=10)
+
+if(require(pacman)==0)
+   {install.packages("pacman")}
+pacman::p_load(devtools,caret,cluster,dplyr,fastDummies,leaps,pacman,tidyverse,skimr,fastDummies,GGally,holdout_dataExplorer,ggrepel,ggthemes,dslabs,scatterplot3d, doParallel, rpart, rpart.plot, randomForest, xgboost, ROCR, DataExplorer)
+
+if (!require(mlba)) {
+  library(devtools)
+  install_github("gedeck/mlba/mlba", force=FALSE)
+}
+pacman::p_load(mlba,tidyverse)
+```
+```{r}
+holdout_data = read_rds("FINALTrainingBuckalewJessup4.RDS")
+train_data = read_rds("FINALHoldoutBuckalewJessup4.RDS")
+```
+
+
+
+```{r}
+ctrl <- trainControl(method = "cv", number = 10, 
+                     summaryFunction = twoClassSummary,
+                     classProbs = TRUE, 
+                     savePredictions = "final")
+```
+
+```{r}
+logit_fit <- train(
+  loan_default ~ ., 
+  data = train_data,
+  method = "glmnet",
+  trControl = ctrl,
+  metric = "ROC",
+  family = "binomial",
+  trace = 0
+)
+```
+
+```{r}
+#Control how model is fit
+#We are using 10 fold cross validation
+#Summary Function
+#ClassProbs
+#SavePredictions
+#Here we are telling it to select based on AUC but is called ROC in the function
+logit_fit2 <- train(
+  loan_default ~ ., 
+  data = train_data,
+  method = "glmnet",
+  trControl = ctrl,
+  tuneGrid = expand.grid(alpha = 1, lambda = seq(.001,.1, length=10)),
+  metric = "ROC",
+  family = "binomial"
+)
+```
+
+```{r}
+plot(logit_fit)
+logit_fit$bestTune
+logit_fit$results
+```
+```{r}
+plot(logit_fit2)
+logit_fit2$bestTune
+logit_fit2$results
+```
+
+
+
+```{r}
+coef(logit_fit$finalModel,logit_fit$bestTune$lambda)
+coef(logit_fit2$finalModel,logit_fit$bestTune$lambda)
+```
+
+```{r}
+saveRDS(logit_fit, file = "logitfit.RDS")
+```
+
+```{r}
+saveRDS(logit_fit2, file = "logitfit2.RDS")
+```
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
