@@ -1,0 +1,124 @@
+---
+title: "BuckalewJessup 591 Part 3"
+author: "Duke Buckalew"
+date: "2025-11-11"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE, message=FALSE,warning=TRUE)
+knitr::opts_chunk$set(fig.width=8, fig.height=6)
+
+if(require(pacman)==0)
+   {install.packages("pacman")}
+pacman::p_load(devtools,caret,cluster,dplyr,fastDummies,leaps,pacman,tidyverse,skimr,fastDummies,GGally,holdout_dataExplorer,ggrepel,ggthemes,dslabs,scatterplot3d, doParallel, rpart, rpart.plot, randomForest, xgboost, ROCR)
+
+if (!require(mlba)) {
+  library(devtools)
+  install_github("gedeck/mlba/mlba", force=FALSE)
+}
+pacman::p_load(mlba,tidyverse)
+```
+
+```{r}
+train_data = readRDS("/Users/dukeb/Desktop/Grad School/Data/FINALTrainingBuckalewJessup4.RDS")
+holdout_data = readRDS("/Users/dukeb/Desktop/Grad School/Data/FINALHoldoutBuckalewJessup4.RDS")
+pred.holdout = readRDS("/Users/dukeb/Downloads/pred.holdout_final.rds")
+```
+
+```{r}
+ctrl <- trainControl(method = "cv", number = 10,
+                     summaryFunction = twoClassSummary,
+                     classProbs = TRUE, 
+                     savePredictions = "final")
+
+logit_fit <- train(
+  loan_default ~ ., 
+  data = train_data,
+  method = "glmnet",
+  trControl = ctrl,
+  tuneGrid = expand.grid(alpha = .11111, lambda = .0001),
+  metric = "ROC",
+  family = "binomial"
+)
+```
+Through original analysis, we found that our best alpha for this model was .11111 and our lambda was .0001. To save time and processing power, that will be inputted here.
+
+```{r}
+logit_fit$results
+```
+Here we can see our model has a ROC AUC of .844, which falls within the general strength of our models so far and is to be expected.
+
+```{r}
+pred.holdout$logistic.prob <- predict(logit_fit, 
+                           newdata = holdout_data, 
+                           type = "prob")[,"Yes"]
+pred.holdout$logistic.class<- factor(ifelse(pred.holdout$logistic.prob > 0.5,
+                                      "Yes","No"),
+                               levels=c("Yes","No"))
+```
+Here we use a threshold of 0.5, but this might not be the most optimal. Because of this, we will find 2 more thresholds and compare their performances, ultimately deciding on one to save.
+
+```{r}
+# finding our optimal threshold through youden's j
+predlogistic <- prediction(pred.holdout$logistic.prob, pred.holdout$loan_default)
+perflogistic <- performance(predlogistic, "tpr", "fpr")
+tpr <- perflogistic@y.values[[1]]
+fpr <- perflogistic@x.values[[1]]
+thresholds <- perflogistic@alpha.values[[1]]
+
+youden_j <- tpr - fpr
+
+optimal_index <- which.max(youden_j)
+optimal_threshold <- thresholds[optimal_index]
+
+predlogistic_class_j <- ifelse(pred.holdout$logistic.prob >= optimal_threshold, "Yes", "No")
+predlogistic_class_j <- factor(predlogistic_class_j, levels = levels(pred.holdout$loan_default))
+```
+Our optimal youden's j threshold is .5154819, which means our model is moderately good at accurately identifying positives and negatives. 
+
+```{r}
+perf_f1 <- performance(predlogistic, measure = "f")
+f1_values <- perf_f1@y.values[[1]]
+f1_thresholds <- perf_f1@x.values[[1]]
+
+# Find best F1 threshold
+optimal_f1_index <- which.max(f1_values)
+optimal_f1_threshold <- f1_thresholds[optimal_f1_index]
+
+predlogistic_class_f1 <- ifelse(pred.holdout$logistic.prob >= optimal_f1_threshold, "Yes", "No")
+predlogistic_class_f1 <- factor(predlogistic_class_f1, levels = c("No","Yes"))
+
+cm_f1 <- confusionMatrix(predlogistic_class_f1, pred.holdout$loan_default, positive="Yes")
+cm_j  <- confusionMatrix(predlogistic_class_j,  pred.holdout$loan_default, positive="Yes")
+
+results <- data.frame(
+  Cutoff = c("Optimal F1", "Optimal Youden's J"),
+  Sensitivity = c(cm_f1$byClass["Sensitivity"], cm_j$byClass["Sensitivity"]),
+  Specificity = c(cm_f1$byClass["Specificity"], cm_j$byClass["Specificity"]),
+  Precision   = c(cm_f1$byClass["Pos Pred Value"], cm_j$byClass["Pos Pred Value"]),
+  F1_Score    = c(cm_f1$byClass["F1"], cm_j$byClass["F1"])
+)
+
+results
+```
+Conversely, our optimal F1 threshold is .652355. This is a distinct difference from our youden's j threshold, meaning the difference is anything but negligable. Because of this it is necessary to compare their metrics. Here we can see our F1 threshold has a higher specificity, precision, and F1 score. It is because of this that we will ultimately end up using this threshold instead of our youden's j.
+
+```{r}
+plot(perflogistic, col = "steelblue", lwd = 2, main = "ROC Curve for Logistic Model")
+abline(a = 0, b = 1, col = "tomato", lty = 2, lwd = 2)
+
+legend("bottomright", 
+       legend=c("Logistic Model"),
+       col=c("steelblue"), lwd=2)
+
+# Extract AUC
+auc <- performance(predlogistic, "auc")@y.values[[1]]
+```
+Here we can see our AUC visualized. 
+
+
+```{r}
+pred.holdout$predlogistic_class_f1 = predlogistic_class_f1
+saveRDS(pred.holdout, "/Users/dukeb/Desktop/Grad School/Data/pred.holdout.rds")
+```
