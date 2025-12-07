@@ -1,0 +1,198 @@
+---
+title: "Group12BBuckalewJessupNeuralNetwork"
+author: "Duke Buckalew"
+date: "2025-12-02"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE, message=FALSE,warning=FALSE)
+knitr::opts_chunk$set(fig.width=8, fig.height=10)
+
+if(require(pacman)==0)
+   {install.packages("pacman")}
+pacman::p_load(devtools,caret,cluster,dplyr,fastDummies,leaps,pacman,tidyverse,skimr,fastDummies,GGally,holdout_dataExplorer,ggrepel,ggthemes,dslabs,scatterplot3d, doParallel, rpart, rpart.plot, randomForest, xgboost, ROCR, DataExplorer, MLmetrics, recipes)
+
+if (!require(mlba)) {
+  library(devtools)
+  install_github("gedeck/mlba/mlba", force=FALSE)
+}
+pacman::p_load(mlba,tidyverse)
+```
+
+```{r}
+holdout_data = read_rds("FINALTrainingBuckalewJessup4.RDS")
+train_data = read_rds("FINALHoldoutBuckalewJessup4.RDS")
+train_data$loan_default <- relevel(train_data$loan_default, ref = "Yes")
+```
+
+```{r}
+train_data = train_data %>%
+  select(-last_credit_pull_d_year)
+holdout_data = holdout_data %>%
+  select(-last_credit_pull_d_year)
+```
+
+```{r, cache=TRUE}
+set.seed(123)
+
+cores=6
+cl <- parallel::makeCluster(cores)  # Set CPU cores for parallel execution
+registerDoParallel(cl)
+#Set cv control
+cv_control <- trainControl(method = "cv", number = 5, allowParallel = TRUE, summaryFunction = twoClassSummary, classProbs = TRUE)
+
+# Define a grid of `mtry` values to search over
+mtry_grid <- expand.grid(mtry = seq(5,15, by = 1))
+
+# Train the Random Forest model with cross-validation
+FinalRF_cv <- train(loan_default ~ ., 
+                  data = train_data,
+                  method = "rf",  # Uses randomForest under the hood
+                  trControl = cv_control,  # Apply 5-fold CV
+                  tuneGrid = mtry_grid,  # Search over `mtry`
+                  ntree = 100,  # Fixed number of trees
+                  importance = TRUE,
+                  nodesize = 5,
+                  metric = "ROC")
+stopCluster(cl)  # Shut down parallel cluster
+registerDoSEQ() 
+```
+
+```{r}
+# Define Numeric Predictors (nonbinary)
+num_vars = train_data %>%
+  dplyr::select(loan_amnt, int_rate, annual_inc, dti, open_acc, revol_bal, revol_util, total_acc, inq_last_6mths, fico_score) %>%
+  names()
+
+# Create a recipe object
+loan_rec <- recipe(loan_default ~ ., data = train_data) %>%
+  step_range(num_vars, min = 0, max = 1) %>%
+  step_dummy(all_nominal_predictors(), one_hot = TRUE)
+
+# Prep and bake
+loan_bake=prep(loan_rec)
+loan_ready_train=bake(loan_bake, new_data = train_data)
+loan_ready_test=bake(loan_bake, new_data = holdout_data)
+```
+```{r}
+sort(names(loan_ready_train))
+```
+
+```{r}
+randomForest::varImpPlot(FinalRF_cv$finalModel, type=2)
+imp=varImp(FinalRF_cv$finalModel,type=2)
+gini_gt_300=rownames(imp)[imp$Overall > 300]
+gini_gt_300
+# debt settlement doesnt have underscore here. It does in the vet ready 
+# After identifying which columns didnt match, I input the four column names to Gemini to have it quickly generate replacements that will match loan_ready_train
+
+# 1. Fix the 'term' variable names
+# The model output has "term60 months", but your data has "term_x60.months"
+gini_gt_300[gini_gt_300 == "term60 months"] <- "term_X60.months"
+gini_gt_300[gini_gt_300 == "term36 months"] <- "term_x36.months" # Adding this just in case the 36-month term is also in the list
+
+# 2. Fix the 'debt_settlement_flag' variable names
+# The model output has "debt_settlement_flagY", but your data has "debt_settlement_flag_Y"
+gini_gt_300[gini_gt_300 == "debt_settlement_flagY"] <- "debt_settlement_flag_Y"
+gini_gt_300[gini_gt_300 == "debt_settlement_flagN"] <- "debt_settlement_flag_N" # Adding this just in case
+
+# 3. Now run your subsetting code again
+rf_train <- loan_ready_train[, c(gini_gt_300, "loan_default")]
+rf_test  <- loan_ready_test[, c(gini_gt_300, "loan_default")]
+
+```
+
+```{r, cache=TRUE}
+
+#Make sure to include how you got the code for the manual F1
+cores = 6
+cl <- parallel::makeCluster(cores)  
+registerDoParallel(cl)
+
+set.seed(123)
+
+tuneGrid = expand.grid(
+  size = c(1, 2, 3, 4, 5, 6, 7, 8, 9, 10),     
+  decay = seq(0.01,0.15,by=.01) 
+)
+
+f1Summary <- function(data, lev = NULL, model = NULL) {
+  f1_val <- MLmetrics::F1_Score(
+    y_true = data$obs,
+    y_pred = data$pred,
+    positive = "Yes"
+  )
+  c(F1 = f1_val)
+}
+
+cv_control <- trainControl(
+  method = "cv",
+  number = 10,
+  allowParallel = TRUE,
+  classProbs = TRUE,
+  summaryFunction = f1Summary
+)
+
+nn_model <- train(
+  loan_default ~ ., 
+  data = train_data,
+  method = "nnet",
+  trControl = cv_control,
+  tuneGrid = tuneGrid,
+  nthread = 1,
+  metric = "F1",
+  linout = FALSE,
+  trace = FALSE,
+  maxit = 500
+)
+
+stopCluster(cl) 
+registerDoSEQ()
+
+nn_model$bestTune
+```
+
+```{r}
+nn_model$results
+nn_model
+```
+
+```{r}
+tuneGrid = expand.grid(
+  size = c(1, 2, 3, 4, 5, 6, 7, 8, 9, 10),     
+  decay = seq(0.05,0.15,by=.02)
+)
+cores = 6
+cl <- parallel::makeCluster(cores)  
+registerDoParallel(cl)
+set.seed(123)
+trControl = trainControl(
+  method = "cv",
+  number = 10,
+  classProbs = TRUE,
+  summaryFunction = twoClassSummary
+)
+
+nn2 = train(
+  loan_default ~ .,
+  data = rf_test,
+  method = "nnet",
+  trControl = trControl,
+  tuneGrid = tuneGrid,
+  metric = "ROC",            # Optimize based on AUC
+  linout = FALSE,
+  trace = FALSE,
+  maxit = 500
+)
+stopCluster(cl) 
+registerDoSEQ()
+
+nn2
+
+```
+```{r}
+saveRDS(nn_model, file = "NN1BuckalewJessup.RDS")
+saveRDS(nn2, file = "NN2BuckalewJessup.RDS")
+```
+
